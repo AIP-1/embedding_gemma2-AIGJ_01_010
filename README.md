@@ -1,11 +1,49 @@
 # EmbeddingGemma 2 Jetson 실습 1~10단계 (AIGJ_01_010 박수연)
 
-Jetson Orin Nano Super 8GB에서 Google의 멀티모달 임베딩 모델 EmbeddingGemma 2를 설치하고, 텍스트·이미지·영상을 하나의 벡터 공간에서 검색하고(1~7단계), USB 웹캠으로 물체 검색·동작 인식·카메라 2대 근접 알람을 만든 실습입니다(8~10단계).
+Jetson Orin Nano Super 8GB에서 멀티모달 임베딩 모델 EmbeddingGemma 2로 텍스트·이미지·영상을 한 벡터 공간에서 검색하고(1~7단계), USB 웹캠으로 물체 검색·동작 인식·카메라 2대 근접 알람을 만든 실습입니다(8~10단계).
+
+![Jetson Orin Nano](https://img.shields.io/badge/Jetson-Orin_Nano_Super_8GB-green)
+![JetPack 7](https://img.shields.io/badge/JetPack-7_%28L4T_R39%29-green)
+![Python 3.12](https://img.shields.io/badge/Python-3.12-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.14.1%2Bcu132-orange)
 
 - 카메라 응용 과제 제출본(과제 1~6 형식, 기능 시험 기록)은 [practice_task_for_jetson_camera_applications-AIGJ_01_010](https://github.com/AIP-1/practice_task_for_jetson_camera_applications-AIGJ_01_010) 저장소에 있습니다.
 - 실습 안내문은 [docs/guide_README.md](docs/guide_README.md)에 있습니다.
 - 공유 보드 A·B에서 팀원과 순서를 맞춰 진행했습니다. 3단계는 보드 A, 4·6단계는 보드 B에서 측정했습니다.
 - 8~10단계는 보드 B에서 팀원(AIGJ_01_004)과 함께 진행했습니다. 코드와 측정 기록(`app.py`, `pose_*.py`, `train_pose.py`, `data/`, `prox/`, `results/`, `reports/`)은 같은 실험에서 나온 것으로, 팀 저장소 [practice_task_for_jetson_camera_applications-AIGJ_01_004](https://github.com/AIP-1/practice_task_for_jetson_camera_applications-AIGJ_01_004)와 같습니다.
+
+
+---
+
+## 결과 한눈에
+
+| 단계 | 내용 | 핵심 결과 | 상태 |
+| :---: | --- | --- | :---: |
+| 1 | 환경 준비 | JetPack 7 계열, MAXN_SUPER, torch 2.14.1+cu132 (GPU) | ✅ |
+| 2 | 패키지·모델 설치 | sentence-transformers 6.2.0, 공통 로더 `eg2.py` | ✅ |
+| 3 | 한국어 텍스트 검색 | 768·256·128차원 모두 정답 문서 1위, 162~182 ms | ✅ |
+| 4 | 글로 사진·영상 찾기 | 이미지 5장 2714 ms, 동영상 10초 4416 ms (OpenCV로 녹화·디코딩) | ✅ |
+| 5 | 음성 임베딩 | 선택 단계라 생략 | ⏭️ 생략 |
+| 6 | 성능 측정 | 텍스트 전용 +1385 MB, 비전 포함 +1727 MB | ✅ |
+| 7 | 도메인 미세 조정 | 카메라 응용 갈래로 진행해 생략 | ⏭️ 생략 |
+| 8 | 웹캠 물체 검색 | YOLOE + 임베딩 재라벨 조합, 13~17 fps | ✅ |
+| 9 | 동작·행동 인식 | 동작 GRU 검증 0.989, 행동 패턴 12/12 | ✅ |
+| 10 | 카메라 2대 근접 알람 | 앉은 사람 거리 오차 0.64 → 0.14 m, 알람 시나리오 5개 모두 3/3 | ✅ |
+
+---
+
+## 8~10단계 구조
+
+```
+USB 웹캠 → Jetson
+  ├ 캡처 스레드: 프레임 → YOLO 계열 검출·추적 → 크롭 / 관절
+  ├ 임베딩 스레드: EmbeddingGemma 2 → 메모리 인덱스 (512차원, 최대 1000개)
+  └ FastAPI 웹 서버 (:8000) → 브라우저 (실시간 영상, 텍스트 검색, 알람 기록)
+```
+
+영상과 임베딩을 다른 스레드로 나누고 사이에 큐를 둬서, 임베딩이 느려도 영상은 15 fps로 계속 흐르게 했습니다. 사람 이미지는 크롭·저장하지 않고 좌표와 알람 기록만 남깁니다.
+
+---
 
 ## 환경
 
@@ -19,22 +57,10 @@ Jetson Orin Nano Super 8GB에서 Google의 멀티모달 임베딩 모델 Embeddi
 | 모델 | google/embeddinggemma-2, bfloat16 / yolo11n, yoloe-11s-seg, yolo11n-pose (8~10단계) |
 | 카메라 | Logitech C920 2대 (/dev/video0, /dev/video2), 자동초점 끔 |
 
-## 진행 단계
-
-| 단계 | 내용 | 상태 |
-| --- | --- | --- |
-| 1 | 환경 준비 (전원 모드, 스왑, venv, GPU용 PyTorch) | 완료 |
-| 2 | 패키지·모델 설치, 공통 로더 `eg2.py` | 완료 |
-| 3 | 한국어 텍스트 검색, 차원(768/256/128) 비교 | 완료 |
-| 4 | 이미지·동영상 임베딩과 텍스트로 검색 | 완료 (녹화·디코딩은 OpenCV로 대체) |
-| 5 | 음성 임베딩 | 생략 (안내문상 다른 단계의 전제가 아닌 선택 단계) |
-| 6 | 구성별 RAM·지연·GPU 측정 | 완료 (오디오·전체 구성은 5단계 생략으로 미측정) |
-| 7 | 도메인 미세 조정 | 생략 (텍스트 전용 갈래, 카메라 응용 갈래로 진행) |
-| 8 | 웹캠 물체 추출과 웹 검색 (YOLO, 임베딩 재라벨, YOLOE 비교) | 완료 (보드 B) |
-| 9 | 사람 동작 인식(만세·한팔들기·손 흔들기·악수), 행동 패턴(관심도), GRU 학습 | 완료 (보드 B) |
-| 10 | 두 카메라 보정, ankle1·stereo·fused 거리 비교, 타겟 자동 찾기, 이동 타겟 충돌 알람 | 완료 (보드 B) |
+---
 
 ## 파일 구성
+
 
 ```
 check.py         설치 확인 (torch가 CUDA 버전인지)
@@ -61,6 +87,8 @@ reports/         PDF 보고서 (9단계, 10단계, 1~10단계 전체)
 docs/            실습 안내문
 ```
 
+---
+
 ## 실행
 
 ```bash
@@ -78,7 +106,8 @@ python proximity_app.py --cams 0 2 --target "brown cardboard box" --moving --ttc
 # 브라우저: http://<Jetson IP>:8000
 ```
 
-8~10단계는 영상과 임베딩을 다른 스레드로 나누고 사이에 큐를 둬서, 임베딩이 느려도 영상은 15 fps로 계속 흐르게 했습니다. 사람 이미지는 크롭·저장하지 않고 좌표와 알람 기록만 남깁니다.
+
+---
 
 ## 주요 결과
 
@@ -156,7 +185,12 @@ RAM은 `free -m`의 used 값. 모델을 올리기 전 1868 MB, 보드 전체 748
 
 8~10단계의 자세한 측정값은 [results/](results/)와 [reports/](reports/)에 있습니다.
 
+---
+
 ## 트러블슈팅
+<details>
+<summary>문제 · 원인 · 해결 18건 펼쳐 보기</summary>
+
 
 | 단계 | 문제 | 원인 | 해결 |
 | --- | --- | --- | --- |
@@ -179,6 +213,10 @@ RAM은 `free -m`의 used 값. 모델을 올리기 전 1868 MB, 보드 전체 748
 | 10 | 이동 타겟이 10~14 m 밖으로 튐 | 상자를 카메라 높이에 가깝게 들어 시선이 수평 | 상자를 무릎~허리 높이로 |
 | 10 | 타겟이 바닥 아래·8 m 밖 | 보정 뒤 cam0이 약 6° 돌아감 | 보정 때 화면과 비교해 손으로 다시 맞춤 |
 
+</details>
+
+---
+
 ## 안내문과 다르게 한 점
 
 - torch는 안내문 기본(JetPack 6, cu126) 대신 JetPack 7용 cu132 인덱스로 설치하고 torchaudio는 제거했다.
@@ -187,6 +225,8 @@ RAM은 `free -m`의 used 값. 모델을 올리기 전 1868 MB, 보드 전체 748
 - 8~10단계: `half=True` 제거, 9단계 `train_pose.py` 표준편차 하한 `std.clamp(min=0.03)`.
 - 10단계 카메라는 `--cams 0 2`, 렌즈 보정은 태블릿 체커보드(칸 22 mm, `--square 0.022`).
 - 10단계 시나리오는 공간이 좁아 4 m 대신 3 m 자리에서 진행, 이동 타겟은 카트 대신 사람이 든 갈색 상자.
+
+---
 
 ## 한계와 다음 개선 (8~10단계)
 
