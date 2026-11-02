@@ -3,3 +3,7 @@ __pycache__/
 media/
 models/
 *.pt
+*.npz
+*.mp4
+*.avi
+crops/
